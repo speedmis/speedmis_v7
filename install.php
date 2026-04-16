@@ -9,17 +9,183 @@
  * 5) 설치 완료 → install.php 잠금
  */
 
-// 이미 설치되었으면 차단
-if (file_exists(__DIR__ . '/.env') && !isset($_GET['force'])) {
+// 이미 설치된 경우: 신규설치 차단, 업데이트는 허용
+$isInstalled = file_exists(__DIR__ . '/.env');
+$mode = $_GET['mode'] ?? '';
+if ($isInstalled && $mode !== 'update' && !isset($_GET['force'])) {
     echo '<!DOCTYPE html><html><head><meta charset="utf-8"><title>SpeedMIS</title></head><body style="font-family:sans-serif;text-align:center;padding:80px">';
     echo '<h2>SpeedMIS v7 은 이미 설치되어 있습니다.</h2>';
-    echo '<p><a href="/">메인으로 이동</a></p></body></html>';
+    echo '<p style="margin:20px 0"><a href="/">메인으로 이동</a></p>';
+    echo '<p><a href="?mode=update" style="color:#4f6ef7">최신 버전으로 업데이트</a></p>';
+    echo '</body></html>';
     exit;
 }
 
 $step    = (int)($_POST['step'] ?? $_GET['step'] ?? 1);
 $errors  = [];
 $success = '';
+
+// ── UPDATE MODE ─────────────────────────────────────────────────────────────
+if ($mode === 'update' && $isInstalled) {
+    $updateStep = (int)($_POST['update_step'] ?? 1);
+    $updateErrors = [];
+    $updateLog = [];
+
+    if ($updateStep === 2 && $_SERVER['REQUEST_METHOD'] === 'POST') {
+        // GitHub 최신 릴리스 다운로드 & 압축 해제
+        $zipUrl = 'https://github.com/speedmis/speedmis_v7/archive/refs/heads/main.zip';
+        $tmpZip = sys_get_temp_dir() . '/speedmis_v7_update_' . time() . '.zip';
+
+        // 다운로드
+        $ctx = stream_context_create(['http' => [
+            'header' => "User-Agent: SpeedMIS-Updater\r\n",
+            'timeout' => 60,
+        ]]);
+        $zipData = @file_get_contents($zipUrl, false, $ctx);
+        if ($zipData === false) {
+            $updateErrors[] = 'GitHub에서 소스를 다운로드할 수 없습니다. 서버의 외부 네트워크 연결을 확인하세요.';
+        } else {
+            file_put_contents($tmpZip, $zipData);
+            $updateLog[] = '다운로드 완료: ' . round(strlen($zipData) / 1024) . ' KB';
+
+            // 압축 해제
+            $zip = new ZipArchive();
+            if ($zip->open($tmpZip) === true) {
+                $rootDir = rtrim($zip->getNameIndex(0), '/');
+                $extractDir = sys_get_temp_dir() . '/speedmis_v7_extract_' . time();
+                $zip->extractTo($extractDir);
+                $zip->close();
+                @unlink($tmpZip);
+
+                $srcDir = $extractDir . '/' . $rootDir;
+                // 보호 파일: .env, uploadFiles, logs 는 덮어쓰지 않음
+                $protect = ['.env', 'uploadFiles', 'logs', 'install.php'];
+
+                $copied = 0;
+                $it = new RecursiveIteratorIterator(
+                    new RecursiveDirectoryIterator($srcDir, FilesystemIterator::SKIP_DOTS),
+                    RecursiveIteratorIterator::SELF_FIRST
+                );
+                foreach ($it as $item) {
+                    $rel = substr($item->getPathname(), strlen($srcDir) + 1);
+                    $dest = __DIR__ . '/' . $rel;
+
+                    // 보호 대상 스킵
+                    $skip = false;
+                    foreach ($protect as $p) {
+                        if ($rel === $p || str_starts_with($rel, $p . '/') || str_starts_with($rel, $p . '\\')) {
+                            $skip = true; break;
+                        }
+                    }
+                    if ($skip) continue;
+
+                    // vendor, node_modules 스킵 (GitHub에 없지만 방어)
+                    if (str_starts_with($rel, 'vendor') || str_starts_with($rel, 'node_modules')) continue;
+
+                    if ($item->isDir()) {
+                        if (!is_dir($dest)) @mkdir($dest, 0755, true);
+                    } else {
+                        $destDir = dirname($dest);
+                        if (!is_dir($destDir)) @mkdir($destDir, 0755, true);
+                        @copy($item->getPathname(), $dest);
+                        @chmod($dest, 0644);
+                        $copied++;
+                    }
+                }
+                $updateLog[] = "파일 업데이트: {$copied}개";
+
+                // 임시 폴더 정리
+                $cleanIt = new RecursiveIteratorIterator(
+                    new RecursiveDirectoryIterator($extractDir, FilesystemIterator::SKIP_DOTS),
+                    RecursiveIteratorIterator::CHILD_FIRST
+                );
+                foreach ($cleanIt as $f) { $f->isDir() ? @rmdir($f->getPathname()) : @unlink($f->getPathname()); }
+                @rmdir($extractDir);
+
+                // DB 마이그레이션 (v7_fresh_install.sql 의 IF NOT EXISTS 로 안전)
+                try {
+                    require_once __DIR__ . '/vendor/autoload.php';
+                    $dotenv = Dotenv\Dotenv::createImmutable(__DIR__);
+                    $dotenv->load();
+                    $pdo = new PDO(
+                        'mysql:host=' . $_ENV['DB_HOST'] . ';port=' . ($_ENV['DB_PORT'] ?? '3306') . ';dbname=' . $_ENV['DB_NAME'] . ';charset=utf8mb4',
+                        $_ENV['DB_USER'], $_ENV['DB_PASS'],
+                        [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]
+                    );
+                    $migSql = @file_get_contents(__DIR__ . '/migration/v7_fresh_install.sql');
+                    if ($migSql) {
+                        $pdo->exec($migSql);
+                        $updateLog[] = 'DB 스키마 동기화 완료';
+                    }
+                } catch (PDOException $e) {
+                    $updateLog[] = 'DB 동기화 경고: ' . $e->getMessage();
+                }
+
+                $updateStep = 3; // 완료
+            } else {
+                $updateErrors[] = 'ZIP 압축 해제에 실패했습니다.';
+            }
+        }
+
+        if (!empty($updateErrors)) $updateStep = 1;
+    }
+
+    // ── 업데이트 화면 렌더링 ──
+    ?>
+    <!DOCTYPE html>
+    <html lang="ko">
+    <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>SpeedMIS v7 Update</title>
+    <style>
+      * { box-sizing: border-box; margin: 0; padding: 0; }
+      body { font-family: 'Pretendard', -apple-system, sans-serif; background: #f4f5f7; color: #1a1d27; min-height: 100vh; display: flex; align-items: center; justify-content: center; }
+      .card { background: #fff; border-radius: 12px; box-shadow: 0 2px 12px rgba(0,0,0,0.08); width: 480px; max-width: 95vw; padding: 40px; }
+      h1 { font-size: 22px; margin-bottom: 6px; }
+      .sub { color: #8c93b0; font-size: 14px; margin-bottom: 28px; }
+      .btn { width: 100%; height: 42px; border: 0; border-radius: 6px; font-size: 15px; font-weight: 600; background: #4f6ef7; color: #fff; cursor: pointer; transition: background 0.15s; }
+      .btn:hover { background: #3b5de7; }
+      .btn-outline { background: transparent; border: 1px solid #dde0e8; color: #4a5068; }
+      .btn-outline:hover { background: #f4f5f7; }
+      .err { background: #fef2f2; border: 1px solid #fca5a5; color: #dc2626; padding: 10px 14px; border-radius: 6px; font-size: 13px; margin-bottom: 16px; }
+      .ok { background: #f0fdf4; border: 1px solid #86efac; color: #16a34a; padding: 10px 14px; border-radius: 6px; font-size: 13px; margin-bottom: 16px; }
+      .log { background: #f8f9fb; border: 1px solid #dde0e8; border-radius: 6px; padding: 12px; font-size: 13px; margin-bottom: 16px; line-height: 1.8; }
+      a { color: #4f6ef7; text-decoration: none; }
+      .done-icon { font-size: 48px; text-align: center; margin-bottom: 16px; }
+      .warn { background: #fffbeb; border: 1px solid #fde68a; color: #92400e; padding: 10px 14px; border-radius: 6px; font-size: 13px; margin-bottom: 16px; }
+    </style>
+    </head>
+    <body>
+    <div class="card">
+    <?php if ($updateStep === 1): ?>
+      <h1>SpeedMIS v7 업데이트</h1>
+      <p class="sub">GitHub에서 최신 소스를 다운로드하여 업데이트합니다.</p>
+      <?php foreach ($updateErrors as $e): ?><div class="err"><?= htmlspecialchars($e) ?></div><?php endforeach; ?>
+      <div class="warn">
+        <strong>.env, uploadFiles, logs</strong> 는 보호되어 덮어쓰지 않습니다.<br>
+        기존 데이터와 설정이 유지됩니다.
+      </div>
+      <form method="post">
+        <input type="hidden" name="update_step" value="2">
+        <button type="submit" class="btn" style="margin-bottom:12px">최신 버전 다운로드 &amp; 적용</button>
+      </form>
+      <a href="/" style="display:block;text-align:center;font-size:14px">취소 — 메인으로 이동</a>
+    <?php elseif ($updateStep === 3): ?>
+      <div class="done-icon">&#10004;</div>
+      <h1 style="text-align:center">업데이트 완료!</h1>
+      <p class="sub" style="text-align:center">SpeedMIS v7 이 최신 버전으로 업데이트되었습니다.</p>
+      <div class="log">
+        <?php foreach ($updateLog as $l): ?><?= htmlspecialchars($l) ?><br><?php endforeach; ?>
+      </div>
+      <a href="/" style="display:block;text-align:center;font-size:15px;font-weight:600">메인으로 이동 &rarr;</a>
+    <?php endif; ?>
+    </div>
+    </body>
+    </html>
+    <?php
+    exit;
+}
 
 // ── STEP 2: DB 연결 테스트 & 생성 ──────────────────────────────────────────
 if ($step === 2 && $_SERVER['REQUEST_METHOD'] === 'POST') {
