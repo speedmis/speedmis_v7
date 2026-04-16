@@ -1,7 +1,5 @@
 .env
-/vendor/
 /node_modules/
-/public/build/
 /uploads/
 /uploadFiles/
 /logs/

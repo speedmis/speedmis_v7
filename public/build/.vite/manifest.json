@@ -1,0 +1,57 @@
+{
+  "_index-D4EAKTmE.js": {
+    "file": "assets/index-D4EAKTmE.js",
+    "name": "index",
+    "isDynamicEntry": true,
+    "imports": [
+      "src/main.jsx"
+    ]
+  },
+  "node_modules/@monaco-editor/react/dist/index.mjs": {
+    "file": "assets/index-WFE2T_Xs.js",
+    "name": "index",
+    "src": "node_modules/@monaco-editor/react/dist/index.mjs",
+    "isDynamicEntry": true,
+    "imports": [
+      "src/main.jsx"
+    ]
+  },
+  "node_modules/react-quill/dist/quill.snow.css": {
+    "file": "assets/quill-DZrYvFpI.css",
+    "src": "node_modules/react-quill/dist/quill.snow.css"
+  },
+  "src/components/GanttChart.jsx": {
+    "file": "assets/GanttChart-CSfrGmbo.js",
+    "name": "GanttChart",
+    "src": "src/components/GanttChart.jsx",
+    "isDynamicEntry": true,
+    "imports": [
+      "src/main.jsx"
+    ]
+  },
+  "src/components/mobile/MobileLayout.jsx": {
+    "file": "assets/MobileLayout-KbAbPCYn.js",
+    "name": "MobileLayout",
+    "src": "src/components/mobile/MobileLayout.jsx",
+    "isDynamicEntry": true,
+    "imports": [
+      "src/main.jsx"
+    ]
+  },
+  "src/main.jsx": {
+    "file": "assets/main-CQEDUPCl.js",
+    "name": "main",
+    "src": "src/main.jsx",
+    "isEntry": true,
+    "dynamicImports": [
+      "node_modules/@monaco-editor/react/dist/index.mjs",
+      "src/components/GanttChart.jsx",
+      "_index-D4EAKTmE.js",
+      "src/components/GanttChart.jsx",
+      "src/components/mobile/MobileLayout.jsx"
+    ],
+    "css": [
+      "assets/main-BSg662Ww.css"
+    ]
+  }
+}
