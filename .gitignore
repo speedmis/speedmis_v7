@@ -1,0 +1,14 @@
+.env
+/vendor/
+/node_modules/
+/public/build/
+/uploads/
+/uploadFiles/
+/logs/
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+fix_upload_perms.php
+/migration/_tmp_*
